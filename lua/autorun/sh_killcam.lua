@@ -1,5 +1,6 @@
 ----// Killcam //----
 -- Author: Exho
+-- Version: 5/25/15
 
 killcam = {}
 
