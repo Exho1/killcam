@@ -1,6 +1,5 @@
 ----// Killcam //----
 -- Author: Exho
--- Version: 3/28/15
 
 killcam = {}
 
@@ -23,6 +22,8 @@ if SERVER then
 			["aAng"] = ply:GetAngles(),
 			["aCol"] = ply.GetPlayerColor and ply:GetPlayerColor() or ply:GetColor(),
 			["aClass"] = ply:GetClass(),
+			["aSequence"] = ply:GetSequence(),
+			["aCycle"]   = ply:GetCycle(),
 			["snapshots"] = ply.snapshots,
 		}
 		
@@ -110,6 +111,11 @@ if SERVER then
 	
 	-- Prepare and send the killcam data to ply or all players if bBroadcast is true
 	function killcam.sendKillcamData( ply, att, bBroadcast )
+		if not att.lastShotData then 
+			print("Failed to create killcam att.lastShotData = nil")
+			return
+		end
+		
 		att.lastShotData.time = att.lastShotData.time or CurTime()
 		if CurTime() - att.lastShotData.time > 15 then return end
 		
@@ -147,8 +153,10 @@ if SERVER then
 		
 		-- Fallbacks
 		att.lastShotData.aMdl = att.lastShotData.aMdl or att:GetModel()
-		att.lastShotData.victimPos = ply:GetPos()
-		att.lastShotData.victimAng = ply:GetAngles()
+		att.lastShotData.vPos = ply:GetPos()
+		att.lastShotData.vAng = ply:GetAngles()
+		att.lastShotData.vSequence = ply:GetSequence()
+		att.lastShotData.vCycle = ply:GetCycle()
 		att.lastShotData.aPos = att.lastShotData.aPos or att:GetPos()
 		att.lastShotData.aAng = att.lastShotData.aAng or att:GetAngles()
 		att.lastShotData.aClass = att.lastShotData.aClass or "nil"
@@ -168,15 +176,17 @@ if SERVER then
 		net.Start("killcam_data")
 			local tbl = att.lastShotData
 			
+			-- Network every needed value to the client(s)
+			-- It might be a bit more efficient than net.*Table but lord is it a pain to maintain
 			net.WriteAngle( tbl.aAng )
-			net.WriteAngle( tbl.victimAng )
+			net.WriteAngle( tbl.vAng )
 			if type( tbl.aCol ):lower() == "color" then
 				net.WriteColor( tbl.aCol )
 			else	
 				tbl.aCol = tbl.aCol or color_white
 				net.WriteColor( Color( tbl.aCol.r, tbl.aCol.g, tbl.aCol.b, tbl.aCol.a ) )
 			end
-			net.WriteVector( tbl.victimPos )
+			net.WriteVector( tbl.vPos )
 			net.WriteVector( tbl.aPos )
 			net.WriteVector( tbl.shooterPos )
 			net.WriteInt( tbl.hitgroup, 3 )
@@ -184,6 +194,10 @@ if SERVER then
 			net.WriteString( tbl.nick )
 			net.WriteString( tbl.aClass )
 			net.WriteString( tbl.aSound )
+			net.WriteFloat( tbl.aSequence )
+			net.WriteFloat( tbl.aCycle )
+			net.WriteFloat( tbl.vSequence )
+			net.WriteFloat( tbl.vCycle )
 			net.WriteBool( bBroadcast )
 			net.WriteTable( tbl.snapshots ) -- Last instance of WriteTable
 			
@@ -262,6 +276,7 @@ local get = player.GetAll
 if CLIENT then
 
 	local killcamEnabled = CreateConVar( "kc_enabled", "1", {FCVAR_USERINFO}, "Do we show a killcam or not when we die?" )
+	killcam.running = false
 	
 	concommand.Add("kc_end", function()
 		killcam.endKillcam()
@@ -372,6 +387,8 @@ if CLIENT then
 	function killcam.endKillcam( player, attacker, bullet )
 		killcam.kcMsgC( "Ending killcam" )
 		
+		killcam.running = false
+		
 		hook.Remove( "Think", "killcam_prediction" )
 		hook.Remove( "CalcView", "killcam_view" )
 		hook.Remove( "HUDPaint", "killcam_hud")
@@ -382,7 +399,13 @@ if CLIENT then
 		
 		if IsValid(attacker) then
 			attacker:Remove()
+		end
+		
+		if IsValid(player) then
 			player:Remove()
+		end
+		
+		if IsValid(bullet) then
 			bullet:Remove()
 		end
 
@@ -399,7 +422,7 @@ if CLIENT then
 		
 		killcam.kcMsgC("Creating killcam! End round? "..tostring(data.special==true))
 		
-		if client:GetNWBool("inKillcam", false ) then
+		if client:GetNWBool("inKillcam", false ) or killcam.running == true then
 			killcam.kcMsgC( "Cannot have multiple killcams running" )
 			return
 		end
@@ -417,20 +440,31 @@ if CLIENT then
 			attacker:SetPos( data.aPos )
 			local ang = data.aAng
 			attacker:SetAngles( Angle( 0, ang.y, 0 ) )
-			attacker:SetRenderMode( RENDERMODE_TRANSALPHA ) 
-			attacker:SetRenderMode( RENDERMODE_TRANSALPHA ) 
-			if data.aCol.r <= 1 and data.aCol.g <= 1 and data.aCol.b <= 1 then -- This is a GetPlayerColor color object
+			attacker:SetRenderMode( RENDERMODE_TRANSALPHA )
+			if data.aCol.r <= 1 and data.aCol.g <= 1 and data.aCol.b <= 1 then -- This is a GetPlayerColor color object so we need to convert it
 				data.aCol = rgbTo255( data.aCol )
 			end
 			attacker:SetColor( data.aCol )
+			
+			-- This poses the model according to how the player actually looked at the time of the killing
+			-- Honestly, I don't understand it but it does the job
+			if data.aSequence then
+				attacker:SetSequence( data.aSequence )
+				attacker:SetCycle( data.aCycle )
+			end
 
 			-- Victim model
 			player = ClientsideModel( data.vMdl, RENDERGROUP_OPAQUE )
-			player:SetPos( Vector(data.victimPos.x, data.victimPos.y, data.victimPos.z) ) -- Victim's Z position seems to be floating in the air
-			local ang = data.victimAng
+			player:SetPos( Vector(data.vPos.x, data.vPos.y, data.vPos.z) ) -- Victim's Z position seems to be floating in the air
+			local ang = data.vAng
 			player:SetAngles( Angle( 0, ang.y, 0 ) )
 			player:SetRenderMode( RENDERMODE_TRANSALPHA ) 
 			player:SetColor( rgbTo255( data.vCol ) )
+			
+			if data.vSequence then
+				player:SetSequence( data.vSequence )
+				player:SetCycle( data.vCycle )
+			end
 			
 			-- Bullet model
 			bullet = ClientsideModel( "models/Items/AR2_Grenade.mdl", RENDERGROUP_OPAQUE )
@@ -444,6 +478,7 @@ if CLIENT then
 		end
 		
 		-- Drop the victim's model by crouch height for accuracy
+		-- TODO: Get around this by using Sequence/Cycle functions to pose the ragdoll as crouching
 		if client:Crouching() then
 			local pos = player:GetPos()
 			player:SetPos( Vector( pos.x, pos.y, pos.z - 36 ) )
@@ -455,17 +490,21 @@ if CLIENT then
 		local bone = killcam.hitgroupBones[data.hitgroup]
 		local boneID = player:LookupBone( bone )
 		
+		-- Okay, can't find that bone.. Try the spine
+		if not boneID then
+			killcam.kcMsgC("Cant find bone: "..bone)
+			bone = "ValveBiped.Bip01_Spine"
+			boneID = player:LookupBone( bone )
+		end
+		
+		-- Get the original bone position or our spine fallback
 		if boneID then
 			killcam.kcMsgC("Hit at "..bone)
 			local pos = player:GetBonePosition( boneID )
 			hitPos = pos 
 		else
-			killcam.kcMsgC("Cant find bone: "..bone)
-			
-			-- Just go for a generic hit if that player model lacks the correct bone
-			boneID = player:LookupBone( "ValveBiped.Bip01_Spine" )
-			local pos = player:GetBonePosition( boneID )
-			hitPos = pos
+			-- Some modellers don't seem to think spines are neccessary.. So the bullet will come from our player's foot
+			hitPos = player:GetPos()
 		end
 		
 		-- Expand the hit position forward by a bit so we are certain that the simulated bullet will hit the simulated player
@@ -473,11 +512,12 @@ if CLIENT then
 		local oHitPos = hitPos
 		hitPos = Vector( hitPos.x + ( fwd.x * 50), hitPos.y + ( fwd.y * 50), hitPos.z )
 		
-		-- Make sure the bullet is facing towards its direction
+		-- Make sure the bullet is facing the right way
 		bullet:SetAngles( (hitPos - bullet:GetPos()):Angle() )
 		
-		-- True: Watching the bullet. False: Watching attacker
 		local followingBullet = !bSnapshots
+		
+		killcam.running = true
 
 		-- CalcView hook to spectate the player
 		hook.Add("CalcView", "killcam_view", function( ply, pos, ang )
@@ -524,7 +564,7 @@ if CLIENT then
 		
 		-- Hide other entities
 		for k, v in pairs( ents.GetAll() ) do
-			if v:IsNPC() or v:IsPlayer() or v:GetClass() == "prop_ragdoll" then
+			if v:IsNPC() or v:IsPlayer() or v:GetClass() == "prop_ragdoll" or v == client:GetViewModel(0) then
 				v:SetNoDraw( true )
 				v.killcamNoDraw = true
 			end
@@ -552,6 +592,7 @@ if CLIENT then
 			end
 		end
 		
+		-- Draw the COD-like hud info
 		hook.Add( "HUDPaint", "killcam_hud", function()
 			local h = ScrH()/8
 			
@@ -724,11 +765,12 @@ if CLIENT then
 	end)
 	
 	net.Receive("killcam_data", function()
+		-- Read all the values from the server and assemble them back into a table
 		local data = {}
 		data.aAng = net.ReadAngle()
-		data.victimAng = net.ReadAngle()
+		data.vAng = net.ReadAngle()
 		data.aCol = net.ReadColor()
-		data.victimPos = net.ReadVector()
+		data.vPos = net.ReadVector()
 		data.aPos = net.ReadVector()
 		data.shooterPos = net.ReadVector()
 		data.hitgroup = net.ReadInt( 3 )
@@ -736,6 +778,10 @@ if CLIENT then
 		data.nick = net.ReadString()
 		data.aClass = net.ReadString()
 		data.aSound = net.ReadString()
+		data.aSequence = net.ReadFloat()
+		data.aCycle = net.ReadFloat()
+		data.vSequence = net.ReadFloat()
+		data.vCycle = net.ReadFloat()
 		data.special = net.ReadBool()
 		data.snapshots = net.ReadTable()
 		
