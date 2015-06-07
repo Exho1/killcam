@@ -156,13 +156,17 @@ if SERVER then
 		att.lastShotData.aMdl = att.lastShotData.aMdl or att:GetModel()
 		att.lastShotData.vPos = ply:GetPos()
 		att.lastShotData.vAng = ply:GetAngles()
-		att.lastShotData.vSequence = ply:GetSequence()
-		att.lastShotData.vCycle = ply:GetCycle()
+		att.lastShotData.vSequence = ply:GetSequence() or 0
+		att.lastShotData.vCycle = ply:GetCycle() or 0
 		att.lastShotData.aPos = att.lastShotData.aPos or att:GetPos()
 		att.lastShotData.aAng = att.lastShotData.aAng or att:GetAngles()
 		att.lastShotData.aClass = att.lastShotData.aClass or "nil"
 		att.lastShotData.aSound = att.lastShotData.aSound or "nil"
-		
+		att.lastShotData.aSequence = att.lastShotData.aSequence or 0
+		att.lastShotData.aCycle = att.lastShotData.aCycle or 0
+		att.lastShotData.vSequence = att.lastShotData.vSequence or 0
+		att.lastShotData.vCycle = att.lastShotData.vCycle or 0
+
 		if att.Nick then
 			att.lastShotData.nick = att:Nick()
 		elseif att:IsNPC() then
@@ -787,7 +791,7 @@ if CLIENT then
 		data.snapshots = net.ReadTable()
 		
 		for k, v in pairs(data) do
-			if v == "nil" then
+			if v == "nil" or v == 0 then
 				data[k] = nil
 			end
 		end
